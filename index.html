@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-p2V2Y07wKGt7ldZfHgwMg45VZ9aVgMnKCAQzahQzRNg=' 'sha256-AxJ358DLLKw7ib10p4cPmC12fNB5Z76nxZBM3Flk6v0=' 'sha256-DMyV7hdpKu96+EwfYImS5aD/zHQqBYOtOIiMuYbiZLk='; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-p2V2Y07wKGt7ldZfHgwMg45VZ9aVgMnKCAQzahQzRNg=' 'sha256-+1OgXCAWezC/ihx287Pe8M+2xtMWGkz34tmLWbaplp8=' 'sha256-DMyV7hdpKu96+EwfYImS5aD/zHQqBYOtOIiMuYbiZLk='; style-src 'unsafe-inline'; img-src data:; connect-src https://zynrix-backend-production.up.railway.app; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="zx-api-base" content="https://zynrix-backend-production.up.railway.app">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ZYNRIX Executive Intelligence Platform™ — Foundation Edition</title>
@@ -1359,7 +1360,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     const answeredCount = Object.keys(state.answers || {}).length;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     if (state.onboardingComplete && !state.onboardingCompletedAt) state.onboardingCompletedAt = now;
-    if (complete && !state.assessmentCompletedAt) state.assessmentCompletedAt = now;
+    let justCompletedAssessment = false;
+    if (complete && !state.assessmentCompletedAt) {
+      state.assessmentCompletedAt = now;
+      justCompletedAssessment = true;
+    }
     let scoreSnapshot = null;
     if (complete) {
       const total = getTotalScore(state.answers);
@@ -1369,6 +1374,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         maturityStage: getMaturityStage(total).stage,
         foundationStatus: getFoundationStatus(state.answers).status
       };
+      if (justCompletedAssessment) {
+        const dimScoresForTelemetry = {};
+        getAllDimensionScores(state.answers).forEach((d) => {
+          dimScoresForTelemetry[d.name] = d.score;
+        });
+        sendAssessmentComplete(dimScoresForTelemetry);
+      }
     }
     return {
       metadata: {
@@ -1901,6 +1913,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     STATE = freshState();
     removeFromStorage();
     clearRecoveryData();
+    clearTelemetrySessionState();
   }
 
   // src/services/access.service.js
@@ -2015,7 +2028,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
 
   // src/config/privacy.config.js
   var PRIVACY_CONTACT_EMAIL = "enterprise@zynrix.ai";
-  var PRIVACY_CORE_STATEMENT = "Your assessment responses, organization profile, evidence notes, saved prompts, and progress are processed and stored locally in this browser. The Foundation Edition does not transmit this information to ZYNRIX or any external AI provider.";
+  var PRIVACY_CORE_STATEMENT = "Your assessment responses, organization profile, evidence notes, saved prompts, and progress are processed and stored locally in this browser by default. The Foundation Edition does not transmit this information to ZYNRIX or any external AI provider unless you explicitly opt in to share your results \u2014 see below.";
   var LOCAL_PROCESSING_STATEMENT = "Generated entirely in this browser. No assessment data is transmitted.";
   var LOCAL_STORAGE_FACTS = [
     "Your data is stored in this browser profile only, not on a ZYNRIX server.",
@@ -2035,13 +2048,153 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     "Your onboarding and assessment progress position"
   ];
   var REPORT_DISCLAIMER = "Generated entirely client-side \u2014 no answer, name, or organization in this report was transmitted anywhere.";
+  function reportDisclaimerText() {
+    if (hasShareConsent()) {
+      return "Generated entirely client-side. You've chosen to share your organization profile and readiness score with ZYNRIX separately \u2014 nothing in this PDF file itself was transmitted.";
+    }
+    return REPORT_DISCLAIMER;
+  }
+
+  // src/services/telemetry.service.js (added — optional, opt-in sharing with ZYNRIX)
+  var ZX_SESSION_KEY = "zx_session_id_v1";
+  var ZX_CONSENT_KEY = "zx_share_consent_v1";
+  var ZX_EMAIL_KEY = "zx_contact_email_v1";
+  var ZX_PENDING_ATTEMPT_KEY = "zx_pending_attempt_id_v1";
+  var ZX_REACTION_SENT_KEY = "zx_reaction_sent_v1";
+  function zxApiBase() {
+    var m = document.querySelector('meta[name="zx-api-base"]');
+    var v = m ? m.getAttribute("content") : "";
+    if (!v || v.indexOf("REPLACE_WITH_YOUR_BACKEND_URL") !== -1) return "";
+    return v;
+  }
+  function zxGetSessionId() {
+    try {
+      var id = localStorage.getItem(ZX_SESSION_KEY);
+      if (!id) {
+        id = "s_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
+        localStorage.setItem(ZX_SESSION_KEY, id);
+      }
+      return id;
+    } catch (e) {
+      return "s_temp_" + Date.now();
+    }
+  }
+  function hasShareConsent() {
+    try {
+      return localStorage.getItem(ZX_CONSENT_KEY) === "true";
+    } catch (e) {
+      return false;
+    }
+  }
+  function setShareConsent(v) {
+    try {
+      localStorage.setItem(ZX_CONSENT_KEY, v ? "true" : "false");
+    } catch (e) {
+    }
+  }
+  function getContactEmail() {
+    try {
+      return localStorage.getItem(ZX_EMAIL_KEY) || "";
+    } catch (e) {
+      return "";
+    }
+  }
+  function setContactEmail(v) {
+    try {
+      localStorage.setItem(ZX_EMAIL_KEY, v || "");
+    } catch (e) {
+    }
+  }
+  function clearTelemetrySessionState() {
+    try {
+      localStorage.removeItem(ZX_PENDING_ATTEMPT_KEY);
+      localStorage.removeItem(ZX_REACTION_SENT_KEY);
+    } catch (e) {
+    }
+  }
+  function zxFetch(path, options) {
+    var base = zxApiBase();
+    if (!base) return Promise.resolve(null);
+    try {
+      return fetch(base + path, options).then((r) => r && r.ok ? r : null).catch(() => null);
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  }
+  function pingVisit() {
+    if (!zxApiBase()) return;
+    zxFetch("/api/public/visit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: zxGetSessionId() }) });
+  }
+  function ensureAttemptStarted() {
+    if (!hasShareConsent()) return Promise.resolve(null);
+    let existing = null;
+    try {
+      existing = localStorage.getItem(ZX_PENDING_ATTEMPT_KEY);
+    } catch (e) {
+    }
+    if (existing) return Promise.resolve(existing);
+    const st = getState();
+    const orgProfile = {
+      preparedByName: st.user.name || "",
+      organizationName: st.user.org || "",
+      industry: st.user.industry || "",
+      organizationSize: st.user.companySize || "",
+      executiveRole: st.user.role || "",
+      assessmentPurpose: st.user.assessmentPurpose || "",
+      email: getContactEmail()
+    };
+    return zxFetch("/api/public/assessment/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: zxGetSessionId(), orgProfile }) }).then((r) => r ? r.json() : null).then((data) => {
+      if (data && data.attemptId) {
+        try {
+          localStorage.setItem(ZX_PENDING_ATTEMPT_KEY, data.attemptId);
+        } catch (e) {
+        }
+        return data.attemptId;
+      }
+      return null;
+    }).catch(() => null);
+  }
+  function sendAssessmentComplete(dimensionScores) {
+    if (!hasShareConsent()) return;
+    ensureAttemptStarted().then((attemptId) => {
+      if (!attemptId) return;
+      zxFetch("/api/public/assessment/" + attemptId + "/complete", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: zxGetSessionId(), dimensionScores }) });
+    });
+  }
+  function sendReportGenerated() {
+    if (!hasShareConsent()) return;
+    let attemptId = null;
+    try {
+      attemptId = localStorage.getItem(ZX_PENDING_ATTEMPT_KEY);
+    } catch (e) {
+    }
+    if (!attemptId) return;
+    zxFetch("/api/public/assessment/" + attemptId + "/report-generated", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: zxGetSessionId() }) });
+  }
+  function sendReaction(kind, rating, comment) {
+    zxFetch("/api/public/reaction", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: zxGetSessionId(), kind, rating, comment }) });
+  }
+  function hasSentReaction() {
+    try {
+      return localStorage.getItem(ZX_REACTION_SENT_KEY) === "true";
+    } catch (e) {
+      return false;
+    }
+  }
+  function markReactionSent() {
+    try {
+      localStorage.setItem(ZX_REACTION_SENT_KEY, "true");
+    } catch (e) {
+    }
+  }
 
   // src/components/PrivacyModal.js
   var DATA_COLLECTED = [
     "Organization profile: name, organization, role, industry, company size, and assessment purpose (all optional)",
     "All 30 readiness assessment answers and any evidence notes you add",
     "Prompts you save or favorite from the Prompt Library, and anything you build in the Prompt Builder",
-    "Your place in the onboarding and assessment wizards, so you can resume later"
+    "Your place in the onboarding and assessment wizards, so you can resume later",
+    "If you opt in to sharing (see below): your organization profile, readiness score, and an optional email address"
   ];
   function openPrivacyModal(triggerEl) {
     return openModal({
@@ -2057,7 +2210,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         ),
         modalSection(
           "Whether data is transmitted",
-          modalPara("No. The Foundation Edition makes no network requests of any kind. There is no external AI provider, no analytics, and no server this app talks to.")
+          modalPara("By default, no. The Foundation Edition makes no network requests unless you explicitly opt in to sharing your results (see the next section). There is no external AI provider and no analytics beyond an anonymous, aggregate visit count.")
+        ),
+        modalSection(
+          "Sharing your results with ZYNRIX (optional)",
+          modalPara("On the Privacy step of onboarding, you can choose to share your organization profile and readiness score with ZYNRIX so a representative can follow up. This is off by default. If you turn it on, only your organization profile, readiness score, and an optional email address are sent \u2014 never your individual question answers, evidence notes, or saved prompts. You can leave this off with no effect on the assessment.")
         ),
         modalSection(
           "How to delete your data",
@@ -2071,7 +2228,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         modalSection("Shared or public devices", modalPara(SHARED_DEVICE_WARNING, { warn: true })),
         modalSection(
           "No account or cloud sync",
-          modalPara("The Foundation Edition has no accounts, no login, and no cloud sync \u2014 each browser profile is entirely separate from every other. (A future Professional Edition\u2122 may offer an organization workspace with shared, synced data; that does not exist in the Foundation Edition and nothing here creates or previews an account.)")
+          modalPara("The Foundation Edition has no accounts, no login, and no cloud sync \u2014 each browser profile is entirely separate from every other. Opting in to share results (above) sends a one-time snapshot; it does not create an account or sync data back to this device. (A future Professional Edition\u2122 may offer an organization workspace with shared, synced data; that does not exist in the Foundation Edition.)")
         ),
         modalSection(
           "Local storage, in full",
@@ -2472,6 +2629,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     const st = getState();
     st.onboardingComplete = true;
     persist();
+    ensureAttemptStarted();
     window.ZXRouter.go("assessment");
   }
   function renderStep(body, step, st) {
@@ -2673,7 +2831,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
       })
     ));
   }
-  function stepPrivacy(body) {
+  function stepPrivacy(body, st) {
     stepHeader(body, "Before we go further", "Your Privacy");
     body.appendChild(el(
       "div",
@@ -2684,8 +2842,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         el("span", { html: iconHtml("lock") }),
         el("p", {}, PRIVACY_CORE_STATEMENT)
       ),
-      el("p", { style: "font-size:12.5px;color:var(--zx-silver-mid);margin:16px 0 0;" }, "This is a fully self-contained Foundation Edition: no account, no server, and nothing ever leaves your device.")
+      el("p", { style: "font-size:12.5px;color:var(--zx-silver-mid);margin:16px 0 0;" }, "This is a fully self-contained Foundation Edition: no account, no login, and no cloud sync. By default, nothing leaves your device.")
     ));
+    body.appendChild(renderShareConsentCard(st));
     body.appendChild(el(
       "div",
       { class: "card", style: "margin-top:14px;" },
@@ -2696,6 +2855,32 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         el("p", { style: "color:var(--zx-warn);" }, SHARED_DEVICE_WARNING)
       )
     ));
+  }
+  function renderShareConsentCard(st) {
+    const checked = hasShareConsent();
+    const card = el(
+      "div",
+      { class: "card", style: "margin-top:14px;" },
+      el("label", { class: "field-label" }, "Optional \u2014 share your results with ZYNRIX"),
+      el(
+        "label",
+        { style: "display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-top:6px;" },
+        el("input", { type: "checkbox", checked, style: "margin-top:3px;", onchange: (e) => {
+          setShareConsent(e.target.checked);
+          window.ZXRouter.render();
+        } }),
+        el("span", { style: "font-size:13px;color:var(--zx-silver);line-height:1.55;" }, "Send my organization profile and readiness score \u2014 not my individual answers, evidence notes, or saved prompts \u2014 to ZYNRIX, so a ZYNRIX representative can follow up. Off unless you turn it on, and leaving it unchecked has no effect on the assessment itself.")
+      )
+    );
+    if (checked) {
+      card.appendChild(el(
+        "div",
+        { style: "margin-top:14px;" },
+        el("label", { class: "field-label", for: "onb-inp-email" }, "Email (optional)"),
+        el("input", { type: "email", id: "onb-inp-email", value: getContactEmail(), placeholder: "you@company.com", oninput: (e) => setContactEmail(e.target.value) })
+      ));
+    }
+    return card;
   }
   function stepLocalStorage(body) {
     stepHeader(body, "How your progress is kept", "Local Storage Notice");
@@ -3363,6 +3548,32 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     container.appendChild(executiveActionsCard(rec, foundation));
     container.appendChild(roadmapPreviewCard(rec));
     container.appendChild(nextStepsCard(dims, st));
+    container.appendChild(reactionCard());
+  }
+  function reactionCard() {
+    if (hasSentReaction()) {
+      return Card(
+        { style: "text-align:center;" },
+        el("p", { style: "font-size:13px;color:var(--zx-silver-mid);margin:0;" }, "Thanks for the feedback.")
+      );
+    }
+    const msg = el("p", { style: "font-size:11.5px;color:var(--zx-good);margin:10px 0 0;display:none;" }, "Thanks \u2014 that helps.");
+    const upBtn = el("button", { class: "btn btn-secondary btn-sm" }, el("span", { html: iconHtml("check") }), "Helpful");
+    const downBtn = el("button", { class: "btn btn-secondary btn-sm" }, "Not helpful");
+    function react(kind) {
+      sendReaction(kind, null, null);
+      markReactionSent();
+      msg.style.display = "block";
+      upBtn.disabled = true;
+      downBtn.disabled = true;
+    }
+    upBtn.addEventListener("click", () => react("up"));
+    downBtn.addEventListener("click", () => react("down"));
+    return Card(
+      { title: "Was this dashboard helpful?", subtitle: "Optional, anonymous feedback \u2014 no answers or organization details are included." },
+      el("div", { class: "btn-row" }, upBtn, downBtn),
+      msg
+    );
   }
   function kpiSection(total, tier, stage, foundation) {
     const wrap = el("div", {});
@@ -4854,7 +5065,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
     doc.setTextColor(...RGB.silverMid);
-    doc.text(REPORT_DISCLAIMER, W / 2, 348, { align: "center" });
+    doc.text(reportDisclaimerText(), W / 2, 348, { align: "center" });
     footer(1);
     doc.addPage();
     bg();
@@ -5243,6 +5454,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
         await generatePDF(rec, execRec, st, () => getAllDimensionScores(st.answers));
         status.textContent = "Downloaded. Check your browser's downloads folder.";
         toast("PDF exported");
+        sendReportGenerated();
       } catch (e) {
         status.textContent = "Something went wrong generating the PDF: " + (e && e.message ? e.message : "unknown error");
       }
@@ -5627,6 +5839,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
   window.ZXRouter = { go, render };
   function init() {
     buildShell();
+    pingVisit();
     const hash = (location.hash || "").replace("#", "");
     let redirected = false;
     if (hash && SCREEN_META[hash]) {
