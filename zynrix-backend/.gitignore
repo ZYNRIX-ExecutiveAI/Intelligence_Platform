@@ -1,9 +1,0 @@
-node_modules/
-.env
-data/*.db
-data/*.db-shm
-data/*.db-wal
-uploads/resources/*
-uploads/covers/*
-!uploads/resources/.gitkeep
-!uploads/covers/.gitkeep
